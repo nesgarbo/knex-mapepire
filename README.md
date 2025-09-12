@@ -1,4 +1,4 @@
-[![npm version](http://img.shields.io/npm/v/@nesgarbo/knex-jt400.svg)](https://npmjs.org/package/@nesgarbo/knex-jt400)
+[![npm version](http://img.shields.io/npm/v/knex-jt400.svg)](https://npmjs.org/package/knex-jt400)
 
 **Please submit an issue for any bug encounter or any questions you have.**
 
@@ -17,7 +17,7 @@ This library uses JDBC and is only tested on IBMi.
 ## Installation
 
 ```
-npm install --save knex @nesgarbo/knex-jt400
+npm install --save knex knex-jt400
 ```
 
 Requires Node v16 or higher.
@@ -34,7 +34,7 @@ This library can be used as commonjs, esm or TypeScript.
 
 ```javascript
 const knex = require("knex");
-const { DB2Dialect } = require("@nesgarbo/knex-jt400");
+const { DB2Dialect } = require("knex-jt400");
 
 const db = knex({
   client: DB2Dialect,
@@ -67,10 +67,10 @@ query
 
 ```javascript
 import knex from "knex";
-import { DB2Dialect } from "@nesgarbo/knex-jt400";
+import { DB2Dialect } from "knex-jt400";
 
 /**
- * @type {import("@nesgarbo/knex-jt400").DB2Config}
+ * @type {import("knex-jt400").DB2Config}
  */
 const config = {
   client: DB2Dialect,
@@ -107,7 +107,7 @@ try {
 
 ```typescript
 import { knex } from "knex";
-import { DB2Dialect, DB2Config } from "@nesgarbo/knex-jt400";
+import { DB2Dialect, DB2Config } from "knex-jt400";
 
 const config: DB2Config = {
   client: DB2Dialect,
@@ -144,7 +144,7 @@ try {
 
 ```typescript
 import { knex } from "knex";
-import { DB2Dialect, DB2Config } from "@nesgarbo/knex-jt400";
+import { DB2Dialect, DB2Config } from "knex-jt400";
 import { Transform } from "node:stream";
 import { finished } from "node:stream/promises";
 

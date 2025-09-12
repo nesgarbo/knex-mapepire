@@ -1,6 +1,6 @@
 {
-  "name": "@nesgarbo/knex-jt400",
-  "version": "0.3.22",
+  "name": "knex-jt400",
+  "version": "0.3.23",
   "description": "Knex dialect for IBMi",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
