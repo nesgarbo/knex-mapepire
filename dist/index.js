@@ -41,15 +41,15 @@ var require_isObject = __commonJS({
 });
 
 // src/index.ts
-var src_exports = {};
-__export(src_exports, {
+var index_exports = {};
+__export(index_exports, {
   DB2Dialect: () => DB2Dialect,
-  default: () => src_default
+  default: () => index_default
 });
-module.exports = __toCommonJS(src_exports);
+module.exports = __toCommonJS(index_exports);
 var import_node_process = __toESM(require("process"));
 var import_knex = require("knex");
-var import_odbc = __toESM(require("odbc"));
+var import_node_jt400 = require("node-jt400");
 
 // src/schema/ibmi-compiler.ts
 var import_compiler = __toESM(require("knex/lib/schema/compiler"));
@@ -145,7 +145,14 @@ var IBMiTableCompiler = class extends import_tablecompiler.default {
     }
   }
   async commit(connection) {
-    return await connection.commit();
+    try {
+      if (typeof connection.execute === "function") {
+        await connection.execute("COMMIT", []);
+      } else if (typeof connection.update === "function") {
+        await connection.update("COMMIT", []);
+      }
+    } catch {
+    }
   }
 };
 var ibmi_tablecompiler_default = IBMiTableCompiler;
@@ -310,104 +317,73 @@ var IBMiQueryCompiler = class extends import_querycompiler.default {
 var ibmi_querycompiler_default = IBMiQueryCompiler;
 
 // src/index.ts
-var import_node_stream = require("stream");
 var DB2Client = class extends import_knex.knex.Client {
   constructor(config) {
     super(config);
-    this.driverName = "odbc";
+    this.driverName = "jt400";
     if (this.dialect && !this.config.client) {
       this.printWarn(
         `Using 'this.dialect' to identify the client is deprecated and support for it will be removed in the future. Please use configuration option 'client' instead.`
       );
     }
     const dbClient = this.config.client || this.dialect;
-    if (!dbClient) {
-      throw new Error(
-        `knex: Required configuration option 'client' is missing.`
-      );
-    }
-    if (config.version) {
-      this.version = config.version;
-    }
+    if (!dbClient) throw new Error(`knex: Required configuration option 'client' is missing.`);
+    if (config.version) this.version = config.version;
     if (this.driverName && config.connection) {
       this.initializeDriver();
       if (!config.pool || config.pool && config.pool.max !== 0) {
         this.initializePool(config);
       }
     }
-    this.valueForUndefined = this.raw("DEFAULT");
-    if (config.useNullAsDefault) {
-      this.valueForUndefined = null;
-    }
+    this.valueForUndefined = config.useNullAsDefault ? null : this.raw("DEFAULT");
   }
+  // Devolvemos un stub de driver con 'pool' por compatibilidad con initializeDriver()
   _driver() {
-    return import_odbc.default;
+    return { pool: import_node_jt400.pool };
   }
   wrapIdentifierImpl(value) {
     return value;
   }
   printDebug(message) {
-    if (import_node_process.default.env.DEBUG === "true") {
-      if (this.logger.debug) {
-        this.logger.debug("knex-ibmi: " + message);
-      }
+    if (import_node_process.default.env.DEBUG === "true" && this.logger.debug) {
+      this.logger.debug(
+        "knex-jt400: " + (typeof message === "string" ? message : JSON.stringify(message))
+      );
     }
   }
   printError(message) {
-    if (this.logger.error) {
-      this.logger.error("knex-ibmi: " + message);
-    }
+    if (this.logger.error) this.logger.error("knex-jt400: " + message);
   }
   printWarn(message) {
-    if (import_node_process.default.env.DEBUG === "true") {
-      if (this.logger.warn) {
-        this.logger.warn("knex-ibmi: " + message);
-      }
+    if (import_node_process.default.env.DEBUG === "true" && this.logger.warn) {
+      this.logger.warn("knex-jt400: " + message);
     }
   }
-  // Get a raw connection, called by the pool manager whenever a new
-  // connection needs to be added to the pool.
+  // ===== Conexión (JT400) =====
   async acquireRawConnection() {
     this.printDebug("acquiring raw connection");
-    const connectionConfig = this.config.connection;
-    if (!connectionConfig) {
-      return this.printError("There is no connection config defined");
+    const cfg = this.config.connection;
+    if (!cfg) {
+      this.printError("There is no connection config defined");
+      throw new Error("Missing connection config");
     }
-    this.printDebug(
-      "connection config: " + this._getConnectionString(connectionConfig)
-    );
-    if (this.config?.pool) {
-      const poolConfig = {
-        connectionString: this._getConnectionString(connectionConfig),
-        connectionTimeout: this.config?.acquireConnectionTimeout || 6e4,
-        initialSize: this.config?.pool?.min || 2,
-        maxSize: this.config?.pool?.max || 10,
-        reuseConnection: true
-      };
-      const pool = await this.driver.pool(poolConfig);
-      return await pool.connect();
-    }
-    return await this.driver.connect(
-      this._getConnectionString(connectionConfig)
-    );
+    const opts = {
+      host: cfg.host,
+      user: cfg.user,
+      password: cfg.password,
+      port: cfg.port ?? 5e4,
+      ...cfg.connectionStringParams || {}
+      // p.ej. naming, libraries, translate, etc.
+    };
+    this.printDebug({ connectionOptions: { ...opts, password: "***" } });
+    const conn = (0, import_node_jt400.pool)(opts);
+    return conn;
   }
-  // Used to explicitly close a connection, called internally by the pool manager
-  // when a connection times out or the pool is shutdown.
   async destroyRawConnection(connection) {
     this.printDebug("destroy connection");
-    return await connection.close();
+    if (connection?.close) await connection.close();
   }
-  _getConnectionString(connectionConfig) {
-    const connectionStringParams = connectionConfig.connectionStringParams || {};
-    const connectionStringExtension = Object.keys(
-      connectionStringParams
-    ).reduce((result, key) => {
-      const value = connectionStringParams[key];
-      return `${result}${key}=${value};`;
-    }, "");
-    return `${`DRIVER=${connectionConfig.driver};SYSTEM=${connectionConfig.host};HOSTNAME=${connectionConfig.host};PORT=${connectionConfig.port};DATABASE=${connectionConfig.database};UID=${connectionConfig.user};PWD=${connectionConfig.password};` + connectionStringExtension}`;
-  }
-  // Runs the query on the specified connection, providing the bindings
+  // ===== Ejecución =====
   async _query(connection, obj) {
     const queryObject = this.normalizeQueryObject(obj);
     const method = this.determineQueryMethod(queryObject);
@@ -421,99 +397,57 @@ var DB2Client = class extends import_knex.knex.Client {
     return queryObject;
   }
   normalizeQueryObject(obj) {
-    if (!obj || typeof obj === "string") {
-      return { sql: obj };
-    }
+    if (!obj || typeof obj === "string") return { sql: obj };
     return obj;
   }
   determineQueryMethod(obj) {
-    return (obj.hasOwnProperty("method") && obj.method !== "raw" ? obj.method : obj.sql.split(" ")[0]).toLowerCase();
+    return (obj.hasOwnProperty("method") && obj.method !== "raw" ? obj.method : String(obj.sql || "").split(" ")[0]).toLowerCase();
   }
   isSelectMethod(method) {
     return method === "select" || method === "first" || method === "pluck";
   }
   async executeSelectQuery(connection, obj) {
-    const rows = await connection.query(obj.sql, obj.bindings);
-    if (rows) {
-      obj.response = { rows, rowCount: rows.length };
-    }
+    const rows = await connection.query(obj.sql, obj.bindings || []);
+    obj.response = { rows: rows || [], rowCount: rows?.length ?? 0 };
   }
   async executeStatementQuery(connection, obj) {
     try {
-      const statement = await connection.createStatement();
-      await statement.prepare(obj.sql);
-      if (obj.bindings) {
-        await statement.bind(obj.bindings);
+      const method = String(obj.method || "").toLowerCase();
+      const hasReturning = Array.isArray(obj.returning) && obj.returning.length > 0;
+      if (method === "insert" && hasReturning && obj.returning.length === 1) {
+        const idCol = obj.returning[0];
+        const id = await connection.insertAndGetId(obj.sql, obj.bindings || []);
+        obj.response = { rows: [{ [idCol]: id }], rowCount: 1 };
+        return;
       }
-      const result = await statement.execute();
-      this.printDebug(String(result));
-      obj.response = this.formatStatementResponse(result);
+      if (hasReturning && (method === "insert" || method === "update" || method === "del" || method === "delete")) {
+        const runSql = `SELECT * FROM FINAL TABLE (${obj.sql})`;
+        const rows = await connection.query(runSql, obj.bindings || []);
+        obj.response = { rows, rowCount: rows?.length ?? 0 };
+        return;
+      }
+      const count = await connection.update(obj.sql, obj.bindings || []);
+      obj.response = { rows: [], rowCount: count ?? 0 };
     } catch (err) {
-      this.printError(JSON.stringify(err));
+      this.printError(typeof err === "string" ? err : JSON.stringify(err, null, 2));
+      throw err;
     }
   }
-  formatStatementResponse(result) {
-    if (result.statement.includes("IDENTITY_VAL_LOCAL()")) {
-      return {
-        rows: result.map(
-          (row) => result.columns && result.columns?.length > 0 ? row[result.columns[0].name] : row
-        ),
-        rowCount: result.count
-      };
-    } else {
-      return { rows: result, rowCount: result.count };
-    }
-  }
-  async _stream(connection, obj, stream, options) {
+  // ===== Streaming =====
+  async _stream(connection, obj, stream, _options) {
     if (!obj.sql) throw new Error("A query is required to stream results");
     return new Promise((resolve, reject) => {
-      stream.on("error", reject);
-      stream.on("end", resolve);
-      connection.query(
-        obj.sql,
-        obj.bindings,
-        {
-          cursor: true,
-          fetchSize: options?.fetchSize || 1
-        },
-        (error, cursor) => {
-          if (error) {
-            this.printError(JSON.stringify(error, null, 2));
-            return;
-          }
-          const readableStream = this._createCursorStream(cursor);
-          readableStream.on("error", (err) => {
-            reject(err);
-            stream.emit("error", err);
-          });
-          readableStream.pipe(stream);
-        }
-      );
-    });
-  }
-  _createCursorStream(cursor) {
-    const parentThis = this;
-    return new import_node_stream.Readable({
-      objectMode: true,
-      read() {
-        cursor.fetch((error, result) => {
-          if (error) {
-            parentThis.printError(JSON.stringify(error, null, 2));
-          }
-          if (!cursor.noData) {
-            this.push(result);
-          } else {
-            cursor.close((closeError) => {
-              if (closeError) {
-                parentThis.printError(JSON.stringify(closeError, null, 2));
-              }
-              if (result) {
-                this.push(result);
-              }
-              this.push(null);
-            });
-          }
+      stream.once("error", reject);
+      stream.once("finish", resolve);
+      try {
+        const rs = connection.createReadStream(obj.sql, obj.bindings || []);
+        rs.once("error", (err) => {
+          stream.emit("error", err);
+          reject(err);
         });
+        rs.pipe(stream);
+      } catch (e) {
+        reject(e);
       }
     });
   }
@@ -537,18 +471,17 @@ var DB2Client = class extends import_knex.knex.Client {
     const validationResult = this.validateResponse(obj);
     if (validationResult !== null) return validationResult;
     const { response } = obj;
-    if (obj.output) {
-      return obj.output(runner, response);
-    }
+    if (obj.output) return obj.output(runner, response);
     return this.processSqlMethod(obj);
   }
   validateResponse(obj) {
     if (!obj.response) {
-      this.printDebug("response undefined" + obj);
+      this.printDebug("response undefined " + JSON.stringify(obj));
       return void 0;
     }
     if (!obj.response.rows) {
-      return this.printError("rows undefined" + obj);
+      this.printError("rows undefined " + JSON.stringify(obj));
+      return void 0;
     }
     return null;
   }
@@ -575,7 +508,7 @@ var DB2Client = class extends import_knex.knex.Client {
   }
 };
 var DB2Dialect = DB2Client;
-var src_default = DB2Client;
+var index_default = DB2Client;
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   DB2Dialect

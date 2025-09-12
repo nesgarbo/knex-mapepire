@@ -1,14 +1,11 @@
-[![npm version](http://img.shields.io/npm/v/@bdkinc/knex-ibmi.svg)](https://npmjs.org/package/@bdkinc/knex-ibmi)
+[![npm version](http://img.shields.io/npm/v/@nesgarbo/knex-jt400.svg)](https://npmjs.org/package/@nesgarbo/knex-jt400)
 
 **Please submit an issue for any bug encounter or any questions you have.**
 
 ## Description
 
 This is an external dialect for [knex](https://knexjs.org).
-This library uses the ODBC (as recommended here https://ibmi-oss-docs.readthedocs.io/en/latest/odbc/README.html)
-driver and is only tested on IBMi.
-
-For more information on IBMi OSS here are the [docs](https://ibmi-oss-docs.readthedocs.io/en/latest/README.html)
+This library uses JDBC and is only tested on IBMi.
 
 ## Supported functionality
 
@@ -20,14 +17,12 @@ For more information on IBMi OSS here are the [docs](https://ibmi-oss-docs.readt
 ## Installation
 
 ```
-npm install --save odbc knex @bdkinc/knex-ibmi
+npm install --save knex @nesgarbo/knex-jt400
 ```
 
 Requires Node v16 or higher.
 
 ## Dependencies
-
-`npm install odbc` see [odbc](https://github.com/IBM/node-odbc)
 
 `npm install knex` see [knex](https://github.com/tgriesser/knex)
 
@@ -39,16 +34,14 @@ This library can be used as commonjs, esm or TypeScript.
 
 ```javascript
 const knex = require("knex");
-const { DB2Dialect } = require("@bdkinc/knex-ibmi");
+const { DB2Dialect } = require("@nesgarbo/knex-jt400");
 
 const db = knex({
   client: DB2Dialect,
   connection: {
     host: "localhost", // hostname or ip address of server
-    database: "*LOCAL", // usually named in your odbc.ini connection
     user: "<user>", // IBMi username
     password: "<password>", // IBMi password
-    driver: "IBM i Access ODBC Driver", // defined in odbcinst.ini
     connectionStringParams: {
       // DSN connection string parameters https://www.ibm.com/docs/en/i/7.5?topic=details-connection-string-keywords
       ALLOWPROCCALLS: 1,
@@ -74,19 +67,17 @@ query
 
 ```javascript
 import knex from "knex";
-import { DB2Dialect } from "@bdkinc/knex-ibmi";
+import { DB2Dialect } from "@nesgarbo/knex-jt400";
 
 /**
- * @type {import("@bdkinc/knex-ibmi").DB2Config}
+ * @type {import("@nesgarbo/knex-jt400").DB2Config}
  */
 const config = {
   client: DB2Dialect,
   connection: {
     host: "localhost", // hostname or ip address of server
-    database: "*LOCAL", // usually named in your odbc.ini connection
     user: "<user>", // IBMi username
     password: "<password>", // IBMi password
-    driver: "IBM i Access ODBC Driver", // defined in odbcinst.ini
     connectionStringParams: {
       // DSN connection string parameters https://www.ibm.com/docs/en/i/7.5?topic=details-connection-string-keywords
       ALLOWPROCCALLS: 1,
@@ -116,16 +107,14 @@ try {
 
 ```typescript
 import { knex } from "knex";
-import { DB2Dialect, DB2Config } from "@bdkinc/knex-ibmi";
+import { DB2Dialect, DB2Config } from "@nesgarbo/knex-jt400";
 
 const config: DB2Config = {
   client: DB2Dialect,
   connection: {
     host: "localhost", // hostname or ip address of server
-    database: "*LOCAL", // usually named in your odbc.ini connection
     user: "<user>", // IBMi username
     password: "<password>", // IBMi password
-    driver: "IBM i Access ODBC Driver", // defined in odbcinst.ini
     connectionStringParams: {
       // DSN connection string parameters https://www.ibm.com/docs/en/i/7.5?topic=details-connection-string-keywords
       ALLOWPROCCALLS: 1,
@@ -155,7 +144,7 @@ try {
 
 ```typescript
 import { knex } from "knex";
-import { DB2Dialect, DB2Config } from "@bdkinc/knex-ibmi";
+import { DB2Dialect, DB2Config } from "@nesgarbo/knex-jt400";
 import { Transform } from "node:stream";
 import { finished } from "node:stream/promises";
 
@@ -163,10 +152,8 @@ const config: DB2Config = {
   client: DB2Dialect,
   connection: {
     host: "localhost", // hostname or ip address of server
-    database: "*LOCAL", // usually named in your odbc.ini connection
     user: "<user>", // IBMi username
     password: "<password>", // IBMi password
-    driver: "IBM i Access ODBC Driver", // defined in odbcinst.ini
     connectionStringParams: {
       // DSN connection string parameters https://www.ibm.com/docs/en/i/7.5?topic=details-connection-string-keywords
       ALLOWPROCCALLS: 1,
@@ -218,36 +205,6 @@ try {
   process.exit();
 }
 ```
-
-## Configuring your driver
-
-If you don't know the name of your installed driver, then look in `odbcinst.ini`. You can find the full path of the file by running `odbcinst -j`.
-There you should see an entry like the one below:
-
-```
-[IBM i Access ODBC Driver] <== driver name in square brackets
-Description=IBM i Access for Linux ODBC Driver
-Driver=/opt/ibm/iaccess/lib/libcwbodbc.so
-Setup=/opt/ibm/iaccess/lib/libcwbodbcs.so
-Driver64=/opt/ibm/iaccess/lib64/libcwbodbc.so
-Setup64=/opt/ibm/iaccess/lib64/libcwbodbcs.so
-Threading=0
-DontDLClose=1
-UsageCount=1
-
-[IBM i Access ODBC Driver 64-bit]
-Description=IBM i Access for Linux 64-bit ODBC Driver
-Driver=/opt/ibm/iaccess/lib64/libcwbodbc.so
-Setup=/opt/ibm/iaccess/lib64/libcwbodbcs.so
-Threading=0
-DontDLClose=1
-UsageCount=1
-```
-
-If that still doesn't work, then unixodbc is probably looking for the config files in the wrong directory.
-A common case is that the configs are in `/etc` but your system expects them to be somewhere else.
-In such a case, override the path unixodbc looks in via the `ODBCSYSINI` and `ODBCINI` environment variables.
-E.g., `ODBCINI=/etc ODBCSYSINI=/etc`.
 
 ## Bundling with Vite
 If you are bundling your application with Vite, then you will need to add this to your config.

@@ -1,6 +1,6 @@
 import TableCompiler from "knex/lib/schema/tablecompiler";
 import isObject from "lodash/isObject";
-import { Connection } from "odbc";
+import { Connection } from "node-jt400";
 
 class IBMiTableCompiler extends TableCompiler {
   createQuery(columns: { sql: any[] }, ifNot: any, like: any) {
@@ -93,7 +93,16 @@ class IBMiTableCompiler extends TableCompiler {
   }
 
   async commit(connection: Connection) {
-    return await connection.commit();
+    try {
+      if (typeof (connection).execute === "function") {
+        await (connection).execute("COMMIT", []);
+      } else if (typeof (connection).update === "function") {
+        await (connection).update("COMMIT", []);
+      }
+      // si la tx la maneja Knex/jt400.transaction(cb), esto no es necesario.
+    } catch {
+      // no-op: evitar romper si el entorno no usa compromiso explícito
+    }
   }
 }
 

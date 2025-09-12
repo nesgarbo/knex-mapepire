@@ -1,18 +1,14 @@
 import process from "node:process";
 import { knex, Knex } from "knex";
-import odbc, { Connection } from "odbc";
+import { pool as jt400Pool, Connection } from "node-jt400";
 import SchemaCompiler from "./schema/ibmi-compiler";
 import TableCompiler from "./schema/ibmi-tablecompiler";
 import ColumnCompiler from "./schema/ibmi-columncompiler";
 import Transaction from "./execution/ibmi-transaction";
 import QueryCompiler from "./query/ibmi-querycompiler";
-import { Readable } from "node:stream";
 
 interface QueryObject {
-  response?: {
-    rows: any[];
-    rowCount: number;
-  };
+  response?: { rows: any[]; rowCount: number };
   sqlMethod: SqlMethod;
   output?: (runner: any, response: any) => any;
   pluck?: (row: any) => any;
@@ -33,25 +29,20 @@ enum SqlMethod {
 class DB2Client extends knex.Client {
   constructor(config: Knex.Config<DB2Config>) {
     super(config);
-    this.driverName = "odbc";
+    this.driverName = "jt400";
 
     if (this.dialect && !this.config.client) {
       this.printWarn(
-        `Using 'this.dialect' to identify the client is deprecated and support for it will be removed in the future. Please use configuration option 'client' instead.`,
+        `Using 'this.dialect' to identify the client is deprecated and support for it will be removed in the future. Please use configuration option 'client' instead.`
       );
     }
 
     const dbClient = this.config.client || this.dialect;
-    if (!dbClient) {
-      throw new Error(
-        `knex: Required configuration option 'client' is missing.`,
-      );
-    }
+    if (!dbClient) throw new Error(`knex: Required configuration option 'client' is missing.`);
 
-    if (config.version) {
-      this.version = config.version;
-    }
+    if (config.version) this.version = config.version;
 
+    // Mantén la pool de Knex activa para orquestar acquire/release
     if (this.driverName && config.connection) {
       this.initializeDriver();
       if (!config.pool || (config.pool && config.pool.max !== 0)) {
@@ -59,107 +50,66 @@ class DB2Client extends knex.Client {
       }
     }
 
-    this.valueForUndefined = this.raw("DEFAULT");
-    if (config.useNullAsDefault) {
-      this.valueForUndefined = null;
-    }
+    this.valueForUndefined = config.useNullAsDefault ? null : this.raw("DEFAULT");
   }
 
+  // Devolvemos un stub de driver con 'pool' por compatibilidad con initializeDriver()
   _driver() {
-    return odbc;
+    return { pool: jt400Pool };
   }
 
   wrapIdentifierImpl(value: any) {
-    // override default wrapper (")
-    // we don't want to use it since
-    // it makes identifier case-sensitive in DB2
+    // Sin comillas para evitar case-sensitive en DB2 for i
     return value;
   }
 
-  printDebug(message: string) {
-    if (process.env.DEBUG === "true") {
-      if (this.logger.debug) {
-        this.logger.debug("knex-ibmi: " + message);
-      }
+  printDebug(message: string | object) {
+    if (process.env.DEBUG === "true" && this.logger.debug) {
+      this.logger.debug(
+        "knex-jt400: " + (typeof message === "string" ? message : JSON.stringify(message))
+      );
     }
   }
-
   printError(message: string) {
-    if (this.logger.error) {
-      this.logger.error("knex-ibmi: " + message);
-    }
+    if (this.logger.error) this.logger.error("knex-jt400: " + message);
   }
-
   printWarn(message: string) {
-    if (process.env.DEBUG === "true") {
-      if (this.logger.warn) {
-        this.logger.warn("knex-ibmi: " + message);
-      }
+    if (process.env.DEBUG === "true" && this.logger.warn) {
+      this.logger.warn("knex-jt400: " + message);
     }
   }
 
-  // Get a raw connection, called by the pool manager whenever a new
-  // connection needs to be added to the pool.
+  // ===== Conexión (JT400) =====
   async acquireRawConnection() {
     this.printDebug("acquiring raw connection");
-    const connectionConfig = this.config.connection as DB2ConnectionConfig;
-
-    if (!connectionConfig) {
-      return this.printError("There is no connection config defined");
+    const cfg = this.config.connection as DB2ConnectionConfig;
+    if (!cfg) {
+      this.printError("There is no connection config defined");
+      throw new Error("Missing connection config");
     }
 
-    this.printDebug(
-      "connection config: " + this._getConnectionString(connectionConfig),
-    );
+    // node-jt400 usa objeto de opciones (no connectionString)
+    const opts: Record<string, any> = {
+      host: cfg.host,
+      user: cfg.user,
+      password: cfg.password,
+      port: cfg.port ?? 50000,
+      ...(cfg.connectionStringParams || {}), // p.ej. naming, libraries, translate, etc.
+    };
 
-    if (this.config?.pool) {
-      const poolConfig = {
-        connectionString: this._getConnectionString(connectionConfig),
-        connectionTimeout: this.config?.acquireConnectionTimeout || 60000,
-        initialSize: this.config?.pool?.min || 2,
-        maxSize: this.config?.pool?.max || 10,
-        reuseConnection: true,
-      };
-      const pool = await this.driver.pool(poolConfig);
-      return await pool.connect();
-    }
+    this.printDebug({ connectionOptions: { ...opts, password: "***" } });
 
-    return await this.driver.connect(
-      this._getConnectionString(connectionConfig),
-    );
+    // Usamos SIEMPRE el pool de jt400; para “sin pool” podemos dejar min=1 desde Knex
+    const conn: Connection = jt400Pool(opts);
+    return conn;
   }
 
-  // Used to explicitly close a connection, called internally by the pool manager
-  // when a connection times out or the pool is shutdown.
   async destroyRawConnection(connection: any) {
     this.printDebug("destroy connection");
-    return await connection.close();
+    if (connection?.close) await connection.close();
   }
 
-  _getConnectionString(connectionConfig: DB2ConnectionConfig) {
-    const connectionStringParams =
-      connectionConfig.connectionStringParams || {};
-
-    const connectionStringExtension = Object.keys(
-      connectionStringParams,
-    ).reduce((result, key) => {
-      const value = connectionStringParams[key];
-      return `${result}${key}=${value};`;
-    }, "");
-
-    return `${
-      `DRIVER=${connectionConfig.driver};` +
-      `SYSTEM=${connectionConfig.host};` +
-      `HOSTNAME=${connectionConfig.host};` +
-      `PORT=${connectionConfig.port};` +
-      `DATABASE=${connectionConfig.database};` +
-      `UID=${connectionConfig.user};` +
-      `PWD=${connectionConfig.password};` +
-      connectionStringExtension
-    }`;
-  }
-
-// Runs the query on the specified connection, providing the bindings
+  // ===== Ejecución =====
   async _query(connection: Connection, obj: any) {
     const queryObject = this.normalizeQueryObject(obj);
     const method = this.determineQueryMethod(queryObject);
@@ -176,17 +126,13 @@ class DB2Client extends knex.Client {
   }
 
   private normalizeQueryObject(obj: any): any {
-    if (!obj || typeof obj === "string") {
-      return { sql: obj };
-    }
+    if (!obj || typeof obj === "string") return { sql: obj };
     return obj;
   }
 
   private determineQueryMethod(obj: any): string {
     return (
-      obj.hasOwnProperty("method") && obj.method !== "raw"
-        ? obj.method
-        : obj.sql.split(" ")[0]
+      (obj.hasOwnProperty("method") && obj.method !== "raw" ? obj.method : String(obj.sql || "").split(" ")[0]) as string
     ).toLowerCase();
   }
 
@@ -194,119 +140,73 @@ class DB2Client extends knex.Client {
     return method === "select" || method === "first" || method === "pluck";
   }
 
-  private async executeSelectQuery(connection: Connection, obj: { sql: string, bindings: any[], response: unknown }): Promise<void> {
-    const rows: Record<any, any>[] = await connection.query(obj.sql, obj.bindings);
-    if (rows) {
-      obj.response = { rows, rowCount: rows.length };
-    }
+  private async executeSelectQuery(
+    connection: Connection,
+    obj: { sql: string; bindings: any[]; response?: unknown }
+  ): Promise<void> {
+    const rows = await connection.query(obj.sql, obj.bindings || []);
+    obj.response = { rows: rows || [], rowCount: rows?.length ?? 0 };
   }
 
   private async executeStatementQuery(connection: Connection, obj: any): Promise<void> {
     try {
-      const statement = await connection.createStatement();
-      await statement.prepare(obj.sql);
+      const method = String(obj.method || "").toLowerCase();
+      const hasReturning = Array.isArray(obj.returning) && obj.returning.length > 0;
 
-      if (obj.bindings) {
-        await statement.bind(obj.bindings);
+      // INSERT ... RETURNING <id> (una sola columna)
+      if (method === "insert" && hasReturning && obj.returning.length === 1) {
+        const idCol = obj.returning[0];
+        const id = await connection.insertAndGetId(obj.sql, obj.bindings || []);
+        obj.response = { rows: [{ [idCol]: id }], rowCount: 1 };
+        return;
       }
 
-      const result = await statement.execute();
-      this.printDebug(String(result));
+      // RETURNING múltiple → FINAL TABLE
+      if (hasReturning && (method === "insert" || method === "update" || method === "del" || method === "delete")) {
+        const runSql = `SELECT * FROM FINAL TABLE (${obj.sql})`;
+        const rows = await connection.query(runSql, obj.bindings || []);
+        obj.response = { rows, rowCount: rows?.length ?? 0 };
+        return;
+      }
 
-      obj.response = this.formatStatementResponse(result);
+      // DML sin RETURNING
+      const count: number = await connection.update(obj.sql, obj.bindings || []);
+      obj.response = { rows: [], rowCount: count ?? 0 };
     } catch (err: any) {
-      this.printError(JSON.stringify(err));
+      this.printError(typeof err === "string" ? err : JSON.stringify(err, null, 2));
+      throw err;
     }
   }
 
-  private formatStatementResponse(result: any): { rows: any; rowCount: number } {
-    // TODO: evaluate if this is necessary
-    // this is hacky we check the SQL for the ID column
-    // we check for the IDENTITY scalar function
-    // if that function is present, then we just return the value of the
-    // IDENTITY column
-    if (result.statement.includes("IDENTITY_VAL_LOCAL()")) {
-      return {
-        rows: result.map((row: { [x: string]: any }) =>
-          result.columns && result.columns?.length > 0
-            ? row[result.columns[0].name]
-            : row,
-        ),
-        rowCount: result.count,
-      };
-    } else {
-      return { rows: result, rowCount: result.count };
-    }
-  }
-
-
+  // ===== Streaming =====
   async _stream(
     connection: Connection,
     obj: { sql: string; bindings: any[] },
-    stream: any,
-    options: {
-      fetchSize?: number;
-    },
+    stream: NodeJS.WritableStream,
+    _options: { fetchSize?: number }
   ) {
     if (!obj.sql) throw new Error("A query is required to stream results");
 
-    return new Promise((resolve, reject) => {
-      stream.on("error", reject);
-      stream.on("end", resolve);
+    // node-jt400: createReadStream(sql, params)
+    return new Promise<void>((resolve, reject) => {
+      stream.once("error", reject);
+      stream.once("finish", resolve);
 
-      connection.query(
-        obj.sql,
-        obj.bindings,
-        {
-          cursor: true,
-          fetchSize: options?.fetchSize || 1,
-        },
-        (error, cursor) => {
-          if (error) {
-            this.printError(JSON.stringify(error, null, 2));
-            return;
-          }
-
-          const readableStream = this._createCursorStream(cursor);
-          readableStream.on("error", (err) => {
-            reject(err);
-            stream.emit("error", err);
-          });
-          readableStream.pipe(stream);
-        },
-      );
-    });
-  }
-
-  private _createCursorStream(cursor: any): Readable {
-    const parentThis = this;
-    return new Readable({
-      objectMode: true,
-      read() {
-        cursor.fetch((error: unknown, result: unknown) => {
-          if (error) {
-            parentThis.printError(JSON.stringify(error, null, 2));
-          }
-
-          if (!cursor.noData) {
-            this.push(result);
-          } else {
-            cursor.close((closeError: unknown) => {
-              if (closeError) {
-                parentThis.printError(JSON.stringify(closeError, null, 2));
-              }
-              if (result) {
-                this.push(result);
-              }
-              this.push(null); // End the stream
-            });
-          }
+      try {
+        const rs = connection.createReadStream(obj.sql, obj.bindings || []);
+        rs.once("error", (err) => {
+          stream.emit("error", err);
+          reject(err);
         });
-      },
+        rs.pipe(stream);
+      } catch (e) {
+        reject(e);
+      }
     });
   }
 
   transaction(container: any, config: any, outerTx: any): Knex.Transaction {
+    // Conserva tu Transaction; si luego quieres integrar pool.transaction(cb), lo vemos.
     return new Transaction(this, container, config, outerTx);
   }
 
@@ -333,30 +233,24 @@ class DB2Client extends knex.Client {
     if (validationResult !== null) return validationResult;
 
     const { response } = obj;
-
-    if (obj.output) {
-      return obj.output(runner, response);
-    }
-
+    if (obj.output) return obj.output(runner, response);
     return this.processSqlMethod(obj);
   }
 
   private validateResponse(obj: QueryObject): any {
     if (!obj.response) {
-      this.printDebug("response undefined" + obj);
+      this.printDebug("response undefined " + JSON.stringify(obj));
       return undefined;
     }
-
     if (!obj.response.rows) {
-      return this.printError("rows undefined" + obj);
+      this.printError("rows undefined " + JSON.stringify(obj));
+      return undefined;
     }
-
     return null;
   }
 
   private processSqlMethod(obj: QueryObject): any {
     const { rows, rowCount } = obj.response!;
-
     switch (obj.sqlMethod) {
       case SqlMethod.SELECT:
         return rows;
@@ -378,57 +272,26 @@ class DB2Client extends knex.Client {
   }
 }
 
+// ===== Tipos de configuración =====
+
 interface DB2PoolConfig {
   min?: number;
   max?: number;
   acquireConnectionTimeout?: number;
 }
 
+// Parámetros JDBC/driver que quieras pasar tal cual a jt400
 interface DB2ConnectionParams {
-  CMT?: number;
-  CONNTYPE?: number;
-  DBQ?: string;
-  MAXDECPREC?: 31 | 63;
-  MAXDECSCALE?: number;
-  MINDIVSCALE?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
-  NAM?: 0 | 1;
-  DFT?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
-  DSP?: 0 | 1 | 2 | 3 | 4;
-  DEC?: 0 | 1;
-  DECFLOATERROROPTION?: 0 | 1;
-  DECFLOATROUNDMODE?: 0 | 1 | 2 | 3 | 4 | 5 | 6;
-  MAPDECIMALFLOATDESCRIBE?: 1 | 3;
-  TFT?: 0 | 1 | 2 | 3 | 4;
-  TSP?: 0 | 1 | 2 | 3;
-  TSFT?: 0 | 1;
-  XMLCURIMPPARSE?: 0 | 1;
-  XMLDECLARATION?: 1 | 2 | 3 | 4;
-  ALLOWPROCCALLS?: 0 | 1;
-  XDYNAMIC?: 0 | 1;
-  DFTPKGLIB?: string;
-  PKG?: 0 | 1 | 2;
-  BLOCKFETCH?: 0 | 1;
-  COMPRESSION?: 0 | 1;
-  CONCURRENCY?: 0 | 1;
-  CURSORSENSITIVITY?: 0 | 1 | 2;
-  EXTCOLINFO?:
-    | "SQL_DESC_AUTO_UNIQUE_VALUE"
-    | "SQL_DESC_BASE_COLUMN_NAME"
-    | "SQL_DESC_BASE_TABLE_NAME and SQL_DESC_TABLE_NAME"
-    | "SQL_DESC_LABEL"
-    | "SQL_DESC_SCHEMA_NAME"
-    | "SQL_DESC_SEARCHABLE"
-    | "SQL_DESC_UNNAMED"
-    | "SQL_DESC_UPDATABLE";
+  [k: string]: any;
 }
 
 interface DB2ConnectionConfig {
-  database: string;
   host: string;
-  port: 50000 | number;
+  port?: number; // por defecto 50000
   user: string;
   password: string;
-  driver: "IBM i Access ODBC Driver" | string;
+  // 'driver' ya no aplica en jt400; lo dejamos opcional por compatibilidad
+  driver?: string;
   connectionStringParams?: DB2ConnectionParams;
 }
 
