@@ -1,6 +1,6 @@
 import TableCompiler from "knex/lib/schema/tablecompiler";
 import isObject from "lodash/isObject";
-import { Connection } from "node-jt400";
+import { Pool as MapepirePool } from "@ibm/mapepire-js";
 
 class IBMiTableCompiler extends TableCompiler {
   createQuery(columns: { sql: any[] }, ifNot: any, like: any) {
@@ -9,7 +9,7 @@ class IBMiTableCompiler extends TableCompiler {
       : "";
 
     if (like) {
-      // This query copy only columns and not all indexes and keys like other databases.
+      // Copia solo columnas (no índices/keys).
       createStatement += `select * into ${this.tableName()} from ${this.tableNameLike()} WHERE 0=1`;
     } else {
       createStatement +=
@@ -55,7 +55,7 @@ class IBMiTableCompiler extends TableCompiler {
 
     if (deferrable && deferrable !== "not deferrable") {
       this.client.logger.warn?.(
-        `IBMi: unique index \`${indexName}\` will not be deferrable ${deferrable}.`,
+        `IBMi: unique index \`${indexName}\` no será deferrable (${deferrable}).`,
       );
     }
 
@@ -73,14 +73,12 @@ class IBMiTableCompiler extends TableCompiler {
     );
   }
 
-  // All of the columns to "add" for the query
+  // Añadir columnas
   addColumns(columns: any, prefix: any) {
     prefix = prefix || this.addColumnsPrefix;
 
     if (columns.sql.length > 0) {
-      const columnSql = columns.sql.map((column) => {
-        return prefix + column;
-      });
+      const columnSql = columns.sql.map((column) => prefix + column);
       this.pushQuery({
         sql:
           (this.lowerCase ? "alter table " : "ALTER TABLE ") +
@@ -92,16 +90,18 @@ class IBMiTableCompiler extends TableCompiler {
     }
   }
 
-  async commit(connection: Connection) {
+  // Commit usando Mapepire Pool (el "connection" que recibe Knex en tu client es el Pool)
+  async commit(connection: MapepirePool | { execute?: Function }) {
     try {
-      if (typeof (connection).execute === "function") {
-        await (connection).execute("COMMIT", []);
-      } else if (typeof (connection).update === "function") {
-        await (connection).update("COMMIT", []);
+      // Ejecuta COMMIT si está disponible; ignora si no existe (no rompe migraciones).
+      if (connection && typeof (connection as MapepirePool).execute === "function") {
+        await (connection as MapepirePool).execute("COMMIT", { parameters: [] });
+      } else if (connection && typeof (connection as any).execute === "function") {
+        // fallback genérico
+        await (connection as any).execute("COMMIT", { parameters: [] });
       }
-      // si la tx la maneja Knex/jt400.transaction(cb), esto no es necesario.
     } catch {
-      // no-op: evitar romper si el entorno no usa compromiso explícito
+      // no-op para no romper si el entorno no usa compromiso explícito
     }
   }
 }

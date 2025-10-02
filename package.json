@@ -1,6 +1,6 @@
 {
-  "name": "knex-jt400",
-  "version": "0.3.23",
+  "name": "knex-mapepire",
+  "version": "0.3.24",
   "description": "Knex dialect for IBMi",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -23,7 +23,7 @@
     "db2",
     "ibm",
     "ibmi",
-    "node-jt400"
+    "mapepire-js"
   ],
   "author": {
     "name": "nesgarbo",
@@ -31,7 +31,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git://github.com/nesgarbo/knex-jt400.git"
+    "url": "git://github.com/nesgarbo/knex-mapepire.git"
   },
   "license": "MIT",
   "devDependencies": {
@@ -56,6 +56,6 @@
   "dependencies": {
     "date-fns": "^4.1.0",
     "knex": "^3",
-    "node-jt400": "^5.4.1"
+    "@ibm/mapepire-js": "0.6.0"
   }
 }

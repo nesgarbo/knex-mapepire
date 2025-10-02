@@ -4,6 +4,7 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
@@ -28,6 +29,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
 // node_modules/lodash/isObject.js
 var require_isObject = __commonJS({
@@ -49,7 +51,7 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 var import_node_process = __toESM(require("process"));
 var import_knex = require("knex");
-var import_node_jt400 = require("node-jt400");
+var import_mapepire_js = require("@ibm/mapepire-js");
 
 // src/schema/ibmi-compiler.ts
 var import_compiler = __toESM(require("knex/lib/schema/compiler"));
@@ -121,7 +123,7 @@ var IBMiTableCompiler = class extends import_tablecompiler.default {
     }
     if (deferrable && deferrable !== "not deferrable") {
       this.client.logger.warn?.(
-        `IBMi: unique index \`${indexName}\` will not be deferrable ${deferrable}.`
+        `IBMi: unique index \`${indexName}\` no ser\xE1 deferrable (${deferrable}).`
       );
     }
     indexName = indexName ? this.formatter.wrap(indexName) : this._indexCommand("unique", this.tableNameRaw, columns);
@@ -131,25 +133,24 @@ var IBMiTableCompiler = class extends import_tablecompiler.default {
       `create unique index ${indexName} on ${this.tableName()} (${columns})${predicateQuery}`
     );
   }
-  // All of the columns to "add" for the query
+  // Añadir columnas
   addColumns(columns, prefix) {
     prefix = prefix || this.addColumnsPrefix;
     if (columns.sql.length > 0) {
-      const columnSql = columns.sql.map((column) => {
-        return prefix + column;
-      });
+      const columnSql = columns.sql.map((column) => prefix + column);
       this.pushQuery({
         sql: (this.lowerCase ? "alter table " : "ALTER TABLE ") + this.tableName() + " " + columnSql.join(" "),
         bindings: columns.bindings
       });
     }
   }
+  // Commit usando Mapepire Pool (el "connection" que recibe Knex en tu client es el Pool)
   async commit(connection) {
     try {
-      if (typeof connection.execute === "function") {
-        await connection.execute("COMMIT", []);
-      } else if (typeof connection.update === "function") {
-        await connection.update("COMMIT", []);
+      if (connection && typeof connection.execute === "function") {
+        await connection.execute("COMMIT", { parameters: [] });
+      } else if (connection && typeof connection.execute === "function") {
+        await connection.execute("COMMIT", { parameters: [] });
       }
     } catch {
     }
@@ -320,10 +321,12 @@ var ibmi_querycompiler_default = IBMiQueryCompiler;
 var DB2Client = class extends import_knex.knex.Client {
   constructor(config) {
     super(config);
-    this.driverName = "jt400";
+    __publicField(this, "driverName");
+    __publicField(this, "_pool");
+    this.driverName = "mapepire-js";
     if (this.dialect && !this.config.client) {
       this.printWarn(
-        `Using 'this.dialect' to identify the client is deprecated and support for it will be removed in the future. Please use configuration option 'client' instead.`
+        `Using 'this.dialect' is deprecated. Use configuration option 'client' instead.`
       );
     }
     const dbClient = this.config.client || this.dialect;
@@ -337,61 +340,78 @@ var DB2Client = class extends import_knex.knex.Client {
     }
     this.valueForUndefined = config.useNullAsDefault ? null : this.raw("DEFAULT");
   }
-  // Devolvemos un stub de driver con 'pool' por compatibilidad con initializeDriver()
+  // Driver stub (Knex lo llama al inicializar). No usamos driver “nativo” aquí.
   _driver() {
-    return { pool: import_node_jt400.pool };
+    return {};
   }
   wrapIdentifierImpl(value) {
     return value;
   }
   printDebug(message) {
-    if (import_node_process.default.env.DEBUG === "true" && this.logger.debug) {
+    if (import_node_process.default.env.DEBUG === "true" && this.logger?.debug) {
       this.logger.debug(
-        "knex-jt400: " + (typeof message === "string" ? message : JSON.stringify(message))
+        "knex-mapepire: " + (typeof message === "string" ? message : JSON.stringify(message))
       );
     }
   }
   printError(message) {
-    if (this.logger.error) this.logger.error("knex-jt400: " + message);
+    if (this.logger?.error) this.logger.error("knex-mapepire: " + message);
   }
   printWarn(message) {
-    if (import_node_process.default.env.DEBUG === "true" && this.logger.warn) {
-      this.logger.warn("knex-jt400: " + message);
+    if (import_node_process.default.env.DEBUG === "true" && this.logger?.warn) {
+      this.logger.warn("knex-mapepire: " + message);
     }
   }
-  // ===== Conexión (JT400) =====
-  async acquireRawConnection() {
-    this.printDebug("acquiring raw connection");
+  // ===== Conexión (Mapepire) =====
+  async ensurePool() {
+    if (this._pool) return this._pool;
     const cfg = this.config.connection;
     if (!cfg) {
       this.printError("There is no connection config defined");
       throw new Error("Missing connection config");
     }
     const opts = {
-      host: cfg.host,
-      user: cfg.user,
-      password: cfg.password,
-      port: cfg.port ?? 5e4,
-      ...cfg.connectionStringParams || {}
-      // p.ej. naming, libraries, translate, etc.
+      creds: {
+        host: cfg.host,
+        user: cfg.user,
+        password: cfg.password,
+        port: cfg.port ?? 8076,
+        rejectUnauthorized: cfg.rejectUnauthorized,
+        ca: cfg.ca
+      },
+      // JDBCOptions opcionales desde this.config.connectionOpts (si quieres)
+      opts: this.config.jdbcOptions,
+      maxSize: this.config.mapepire?.maxSize ?? 10,
+      startingSize: this.config.mapepire?.startingSize ?? 1
     };
-    this.printDebug({ connectionOptions: { ...opts, password: "***" } });
-    const conn = (0, import_node_jt400.pool)(opts);
-    return conn;
+    this.printDebug({ poolOptions: { ...opts, creds: { ...opts.creds, password: "***" } } });
+    this._pool = new import_mapepire_js.Pool(opts);
+    await this._pool.init();
+    return this._pool;
+  }
+  async acquireRawConnection() {
+    this.printDebug("acquiring raw connection (returns Mapepire Pool)");
+    const pool = await this.ensurePool();
+    return pool;
   }
   async destroyRawConnection(connection) {
-    this.printDebug("destroy connection");
-    if (connection?.close) await connection.close();
+    this.printDebug("destroy connection (ending Mapepire Pool)");
+    try {
+      const pool = connection ?? this._pool;
+      pool?.end();
+    } finally {
+      this._pool = void 0;
+    }
   }
   // ===== Ejecución =====
-  async _query(connection, obj) {
+  async _query(pool, obj) {
     const queryObject = this.normalizeQueryObject(obj);
     const method = this.determineQueryMethod(queryObject);
     queryObject.sqlMethod = method;
     if (this.isSelectMethod(method)) {
-      await this.executeSelectQuery(connection, queryObject);
+      await this.executeSelectQuery(pool, queryObject);
     } else {
-      await this.executeStatementQuery(connection, queryObject);
+      await this.executeStatementQuery(pool, queryObject);
     }
     this.printDebug(queryObject);
     return queryObject;
@@ -401,55 +421,47 @@ var DB2Client = class extends import_knex.knex.Client {
     return obj;
   }
   determineQueryMethod(obj) {
-    return (obj.hasOwnProperty("method") && obj.method !== "raw" ? obj.method : String(obj.sql || "").split(" ")[0]).toLowerCase();
+    const m = (obj.hasOwnProperty("method") && obj.method !== "raw" ? obj.method : String(obj.sql || "").trim().split(/\s+/)[0]) || "";
+    return m.toLowerCase() || "select" /* SELECT */;
   }
   isSelectMethod(method) {
     return method === "select" || method === "first" || method === "pluck";
   }
-  async executeSelectQuery(connection, obj) {
-    const rows = await connection.query(obj.sql, obj.bindings || []);
-    obj.response = { rows: rows || [], rowCount: rows?.length ?? 0 };
+  async executeSelectQuery(pool, obj) {
+    const res = await pool.execute(obj.sql, {
+      parameters: obj.bindings ?? []
+      //isTerseResults: true,
+    });
+    const rows = res?.data ?? [];
+    obj.response = { rows, rowCount: rows.length };
   }
-  async executeStatementQuery(connection, obj) {
+  async executeStatementQuery(pool, obj) {
     try {
       const method = String(obj.method || "").toLowerCase();
       const hasReturning = Array.isArray(obj.returning) && obj.returning.length > 0;
-      if (method === "insert" && hasReturning && obj.returning.length === 1) {
-        const idCol = obj.returning[0];
-        const id = await connection.insertAndGetId(obj.sql, obj.bindings || []);
-        obj.response = { rows: [{ [idCol]: id }], rowCount: 1 };
-        return;
-      }
       if (hasReturning && (method === "insert" || method === "update" || method === "del" || method === "delete")) {
         const runSql = `SELECT * FROM FINAL TABLE (${obj.sql})`;
-        const rows = await connection.query(runSql, obj.bindings || []);
-        obj.response = { rows, rowCount: rows?.length ?? 0 };
+        const res2 = await pool.execute(runSql, {
+          parameters: obj.bindings ?? []
+          //isTerseResults: true,
+        });
+        const rows = res2?.data ?? [];
+        obj.response = { rows, rowCount: rows.length };
         return;
       }
-      const count = await connection.update(obj.sql, obj.bindings || []);
-      obj.response = { rows: [], rowCount: count ?? 0 };
+      const res = await pool.execute(obj.sql, {
+        parameters: obj.bindings ?? []
+        //isTerseResults: true,
+      });
+      obj.response = { rows: [], rowCount: res?.update_count ?? 0 };
     } catch (err) {
       this.printError(typeof err === "string" ? err : JSON.stringify(err, null, 2));
       throw err;
     }
   }
   // ===== Streaming =====
-  async _stream(connection, obj, stream, _options) {
-    if (!obj.sql) throw new Error("A query is required to stream results");
-    return new Promise((resolve, reject) => {
-      stream.once("error", reject);
-      stream.once("finish", resolve);
-      try {
-        const rs = connection.createReadStream(obj.sql, obj.bindings || []);
-        rs.once("error", (err) => {
-          stream.emit("error", err);
-          reject(err);
-        });
-        rs.pipe(stream);
-      } catch (e) {
-        reject(e);
-      }
-    });
+  async _stream(_pool, obj, _stream) {
+    throw new Error("Streaming no soportado actualmente con Mapepire. Usa paginaci\xF3n.");
   }
   transaction(container, config, outerTx) {
     return new ibmi_transaction_default(this, container, config, outerTx);

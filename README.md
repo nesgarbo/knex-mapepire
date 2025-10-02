@@ -1,23 +1,25 @@
-[![npm version](http://img.shields.io/npm/v/knex-jt400.svg)](https://npmjs.org/package/knex-jt400)
+[![npm version](http://img.shields.io/npm/v/knex-mapepire.svg)](https://npmjs.org/package/knex-mapepire)
 
 **Please submit an issue for any bug encounter or any questions you have.**
 
 ## Description
 
 This is an external dialect for [knex](https://knexjs.org).
-This library uses JDBC and is only tested on IBMi.
+This library uses @ibm/mapepire-js.
 
 ## Supported functionality
 
 - Query building
 - Query execution
 - Transactions
+
+## Future functionality
 - Streaming
 
 ## Installation
 
 ```
-npm install --save knex knex-jt400
+npm install --save knex knex-mapepire
 ```
 
 Requires Node v16 or higher.
@@ -34,7 +36,7 @@ This library can be used as commonjs, esm or TypeScript.
 
 ```javascript
 const knex = require("knex");
-const { DB2Dialect } = require("knex-jt400");
+const { DB2Dialect } = require("knex-mapepire");
 
 const db = knex({
   client: DB2Dialect,
@@ -42,12 +44,7 @@ const db = knex({
     host: "localhost", // hostname or ip address of server
     user: "<user>", // IBMi username
     password: "<password>", // IBMi password
-    connectionStringParams: {
-      // DSN connection string parameters https://www.ibm.com/docs/en/i/7.5?topic=details-connection-string-keywords
-      ALLOWPROCCALLS: 1,
-      CMT: 0,
-      DBQ: "MYLIB", // library or schema that holds the tables
-    },
+    rejectUnauthorized: false
   },
   pool: {
     min: 2,
@@ -67,10 +64,10 @@ query
 
 ```javascript
 import knex from "knex";
-import { DB2Dialect } from "knex-jt400";
+import { DB2Dialect } from "knex-mapepire";
 
 /**
- * @type {import("knex-jt400").DB2Config}
+ * @type {import("knex-mapepire").DB2Config}
  */
 const config = {
   client: DB2Dialect,
@@ -78,12 +75,7 @@ const config = {
     host: "localhost", // hostname or ip address of server
     user: "<user>", // IBMi username
     password: "<password>", // IBMi password
-    connectionStringParams: {
-      // DSN connection string parameters https://www.ibm.com/docs/en/i/7.5?topic=details-connection-string-keywords
-      ALLOWPROCCALLS: 1,
-      CMT: 0,
-      DBQ: "MYLIB", // library or schema that holds the tables
-    },
+    rejectUnauthorized: false
   },
   pool: {
     min: 2,
@@ -107,7 +99,7 @@ try {
 
 ```typescript
 import { knex } from "knex";
-import { DB2Dialect, DB2Config } from "knex-jt400";
+import { DB2Dialect, DB2Config } from "knex-mapepire";
 
 const config: DB2Config = {
   client: DB2Dialect,
@@ -115,12 +107,7 @@ const config: DB2Config = {
     host: "localhost", // hostname or ip address of server
     user: "<user>", // IBMi username
     password: "<password>", // IBMi password
-    connectionStringParams: {
-      // DSN connection string parameters https://www.ibm.com/docs/en/i/7.5?topic=details-connection-string-keywords
-      ALLOWPROCCALLS: 1,
-      CMT: 0,
-      DBQ: "MYLIB", // library or schema that holds the tables
-    },
+    rejectUnauthorized: false
   },
   pool: {
     min: 2,
@@ -140,11 +127,11 @@ try {
 }
 ```
 
-### Streaming example
+### Streaming example in future
 
 ```typescript
 import { knex } from "knex";
-import { DB2Dialect, DB2Config } from "knex-jt400";
+import { DB2Dialect, DB2Config } from "knex-mapepire";
 import { Transform } from "node:stream";
 import { finished } from "node:stream/promises";
 
@@ -154,12 +141,7 @@ const config: DB2Config = {
     host: "localhost", // hostname or ip address of server
     user: "<user>", // IBMi username
     password: "<password>", // IBMi password
-    connectionStringParams: {
-      // DSN connection string parameters https://www.ibm.com/docs/en/i/7.5?topic=details-connection-string-keywords
-      ALLOWPROCCALLS: 1,
-      CMT: 0,
-      DBQ: "MYLIB", // library or schema that holds the tables
-    },
+    rejectUnauthorized: false
   },
   pool: {
     min: 2,

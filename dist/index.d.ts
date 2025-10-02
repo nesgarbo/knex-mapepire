@@ -1,5 +1,5 @@
 import { knex, Knex } from 'knex';
-import { Connection, pool } from 'node-jt400';
+import { Pool, DaemonServer, JDBCOptions, BindingValue } from '@ibm/mapepire-js';
 import SchemaCompiler from 'knex/lib/schema/compiler';
 import TableCompiler from 'knex/lib/schema/tablecompiler';
 import ColumnCompiler from 'knex/lib/schema/columncompiler';
@@ -21,7 +21,9 @@ declare class IBMiTableCompiler extends TableCompiler {
         predicate: any;
     }): void;
     addColumns(columns: any, prefix: any): void;
-    commit(connection: Connection): Promise<void>;
+    commit(connection: Pool | {
+        execute?: Function;
+    }): Promise<void>;
 }
 
 declare class IBMiColumnCompiler extends ColumnCompiler {
@@ -57,6 +59,10 @@ interface QueryObject {
     output?: (runner: any, response: any) => any;
     pluck?: (row: any) => any;
     select?: boolean;
+    method?: string;
+    sql?: string;
+    bindings?: any[];
+    returning?: string[];
 }
 declare enum SqlMethod {
     SELECT = "select",
@@ -69,28 +75,33 @@ declare enum SqlMethod {
     COUNTER = "counter"
 }
 declare class DB2Client extends knex.Client {
+    driverName: string;
+    private _pool?;
     constructor(config: Knex.Config<DB2Config>);
-    _driver(): {
-        pool: typeof pool;
-    };
+    _driver(): {};
     wrapIdentifierImpl(value: any): any;
     printDebug(message: string | object): void;
     printError(message: string): void;
     printWarn(message: string): void;
-    acquireRawConnection(): Promise<Connection>;
+    private ensurePool;
+    acquireRawConnection(): Promise<Pool>;
     destroyRawConnection(connection: any): Promise<void>;
-    _query(connection: Connection, obj: any): Promise<any>;
+    _query(pool: Pool, obj: QueryObject & {
+        sql: string;
+        bindings?: BindingValue[];
+    }): Promise<QueryObject & {
+        sql: string;
+        bindings?: BindingValue[];
+    }>;
     private normalizeQueryObject;
     private determineQueryMethod;
     private isSelectMethod;
     private executeSelectQuery;
     private executeStatementQuery;
-    _stream(connection: Connection, obj: {
+    _stream(_pool: Pool, obj: {
         sql: string;
-        bindings: any[];
-    }, stream: NodeJS.WritableStream, _options: {
-        fetchSize?: number;
-    }): Promise<void>;
+        bindings?: BindingValue[];
+    }, _stream: NodeJS.WritableStream): Promise<void>;
     transaction(container: any, config: any, outerTx: any): Knex.Transaction;
     schemaCompiler(tableBuilder: any): IBMiSchemaCompiler;
     tableCompiler(tableBuilder: any): IBMiTableCompiler;
@@ -105,21 +116,15 @@ interface DB2PoolConfig {
     max?: number;
     acquireConnectionTimeout?: number;
 }
-interface DB2ConnectionParams {
-    [k: string]: any;
-}
-interface DB2ConnectionConfig {
-    host: string;
-    port?: number;
-    user: string;
-    password: string;
-    driver?: string;
-    connectionStringParams?: DB2ConnectionParams;
-}
 interface DB2Config extends Knex.Config {
     client: any;
-    connection: DB2ConnectionConfig;
+    connection: DaemonServer;
     pool?: DB2PoolConfig;
+    jdbcOptions?: JDBCOptions;
+    mapepire?: {
+        maxSize?: number;
+        startingSize?: number;
+    };
 }
 declare const DB2Dialect: typeof DB2Client;
 

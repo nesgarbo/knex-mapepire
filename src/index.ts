@@ -1,6 +1,13 @@
 import process from "node:process";
 import { knex, Knex } from "knex";
-import { pool as jt400Pool, Connection } from "node-jt400";
+import {
+  Pool as MapepirePool,
+  DaemonServer,
+  JDBCOptions,
+  QueryResult,
+  BindingValue,
+} from "@ibm/mapepire-js";
+
 import SchemaCompiler from "./schema/ibmi-compiler";
 import TableCompiler from "./schema/ibmi-tablecompiler";
 import ColumnCompiler from "./schema/ibmi-columncompiler";
@@ -13,6 +20,10 @@ interface QueryObject {
   output?: (runner: any, response: any) => any;
   pluck?: (row: any) => any;
   select?: boolean;
+  method?: string;
+  sql?: string;
+  bindings?: any[];
+  returning?: string[];
 }
 
 enum SqlMethod {
@@ -27,22 +38,24 @@ enum SqlMethod {
 }
 
 class DB2Client extends knex.Client {
+  driverName: string;
+  private _pool?: MapepirePool;
+
   constructor(config: Knex.Config<DB2Config>) {
     super(config);
-    this.driverName = "jt400";
+    this.driverName = "mapepire-js";
 
     if (this.dialect && !this.config.client) {
       this.printWarn(
-        `Using 'this.dialect' to identify the client is deprecated and support for it will be removed in the future. Please use configuration option 'client' instead.`
+        `Using 'this.dialect' is deprecated. Use configuration option 'client' instead.`
       );
     }
 
     const dbClient = this.config.client || this.dialect;
     if (!dbClient) throw new Error(`knex: Required configuration option 'client' is missing.`);
-
     if (config.version) this.version = config.version;
 
-    // Mantén la pool de Knex activa para orquestar acquire/release
+    // Mantén la pool de Knex (para acquire/release externos), aunque internamente usemos Mapepire Pool.
     if (this.driverName && config.connection) {
       this.initializeDriver();
       if (!config.pool || (config.pool && config.pool.max !== 0)) {
@@ -53,9 +66,9 @@ class DB2Client extends knex.Client {
     this.valueForUndefined = config.useNullAsDefault ? null : this.raw("DEFAULT");
   }
 
-  // Devolvemos un stub de driver con 'pool' por compatibilidad con initializeDriver()
+  // Driver stub (Knex lo llama al inicializar). No usamos driver “nativo” aquí.
   _driver() {
-    return { pool: jt400Pool };
+    return {};
   }
 
   wrapIdentifierImpl(value: any) {
@@ -64,61 +77,84 @@ class DB2Client extends knex.Client {
   }
 
   printDebug(message: string | object) {
-    if (process.env.DEBUG === "true" && this.logger.debug) {
+    if (process.env.DEBUG === "true" && this.logger?.debug) {
       this.logger.debug(
-        "knex-jt400: " + (typeof message === "string" ? message : JSON.stringify(message))
+        "knex-mapepire: " + (typeof message === "string" ? message : JSON.stringify(message))
       );
     }
   }
   printError(message: string) {
-    if (this.logger.error) this.logger.error("knex-jt400: " + message);
+    if (this.logger?.error) this.logger.error("knex-mapepire: " + message);
   }
   printWarn(message: string) {
-    if (process.env.DEBUG === "true" && this.logger.warn) {
-      this.logger.warn("knex-jt400: " + message);
+    if (process.env.DEBUG === "true" && this.logger?.warn) {
+      this.logger.warn("knex-mapepire: " + message);
     }
   }
 
-  // ===== Conexión (JT400) =====
-  async acquireRawConnection() {
-    this.printDebug("acquiring raw connection");
-    const cfg = this.config.connection as DB2ConnectionConfig;
+  // ===== Conexión (Mapepire) =====
+  private async ensurePool(): Promise<MapepirePool> {
+    if (this._pool) return this._pool;
+
+    const cfg = this.config.connection as DaemonServer | undefined;
     if (!cfg) {
       this.printError("There is no connection config defined");
       throw new Error("Missing connection config");
     }
 
-    // node-jt400 usa objeto de opciones (no connectionString)
-    const opts: Record<string, any> = {
-      host: cfg.host,
-      user: cfg.user,
-      password: cfg.password,
-      port: cfg.port ?? 50000,
-      ...(cfg.connectionStringParams || {}), // p.ej. naming, libraries, translate, etc.
+    // PoolOptions (Mapepire)
+    const opts: any = {
+      creds: {
+        host: cfg.host,
+        user: cfg.user,
+        password: cfg.password,
+        port: cfg.port ?? 8076,
+        rejectUnauthorized: cfg.rejectUnauthorized,
+        ca: cfg.ca,
+      },
+      // JDBCOptions opcionales desde this.config.connectionOpts (si quieres)
+      opts: (this.config as any).jdbcOptions as JDBCOptions | undefined,
+      maxSize: (this.config as any).mapepire?.maxSize ?? 10,
+      startingSize: (this.config as any).mapepire?.startingSize ?? 1,
     };
 
-    this.printDebug({ connectionOptions: { ...opts, password: "***" } });
+    this.printDebug({ poolOptions: { ...opts, creds: { ...opts.creds, password: "***" } } });
 
-    // Usamos SIEMPRE el pool de jt400; para “sin pool” podemos dejar min=1 desde Knex
-    const conn: Connection = jt400Pool(opts);
-    return conn;
+    this._pool = new MapepirePool(opts);
+    await this._pool.init(); // crea los SQLJob iniciales
+    return this._pool;
+  }
+
+  async acquireRawConnection() {
+    this.printDebug("acquiring raw connection (returns Mapepire Pool)");
+    const pool = await this.ensurePool();
+    // Devolvemos el pool como “conexión” para el runner de Knex
+    return pool;
   }
 
   async destroyRawConnection(connection: any) {
-    this.printDebug("destroy connection");
-    if (connection?.close) await connection.close();
+    this.printDebug("destroy connection (ending Mapepire Pool)");
+    try {
+      const pool: MapepirePool | undefined = connection ?? this._pool;
+      pool?.end();
+    } finally {
+      this._pool = undefined;
+    }
   }
 
   // ===== Ejecución =====
-  async _query(connection: Connection, obj: any) {
-    const queryObject = this.normalizeQueryObject(obj);
+  async _query(pool: MapepirePool, obj: QueryObject & { sql: string; bindings?: BindingValue[] }) {
+    const queryObject = this.normalizeQueryObject(obj) as QueryObject & {
+      sql: string;
+      bindings?: BindingValue[];
+    };
     const method = this.determineQueryMethod(queryObject);
-    queryObject.sqlMethod = method;
+    queryObject.sqlMethod = method as SqlMethod;
 
     if (this.isSelectMethod(method)) {
-      await this.executeSelectQuery(connection, queryObject);
+      await this.executeSelectQuery(pool, queryObject);
     } else {
-      await this.executeStatementQuery(connection, queryObject);
+      await this.executeStatementQuery(pool, queryObject);
     }
 
     this.printDebug(queryObject);
@@ -130,10 +166,12 @@ class DB2Client extends knex.Client {
     return obj;
   }
 
-  private determineQueryMethod(obj: any): string {
-    return (
-      (obj.hasOwnProperty("method") && obj.method !== "raw" ? obj.method : String(obj.sql || "").split(" ")[0]) as string
-    ).toLowerCase();
+  private determineQueryMethod(obj: any): SqlMethod {
+    const m =
+      (obj.hasOwnProperty("method") && obj.method !== "raw"
+        ? obj.method
+        : String(obj.sql || "").trim().split(/\s+/)[0]) || "";
+    return (m.toLowerCase() as SqlMethod) || SqlMethod.SELECT;
   }
 
   private isSelectMethod(method: string): boolean {
@@ -141,37 +179,40 @@ class DB2Client extends knex.Client {
   }
 
   private async executeSelectQuery(
-    connection: Connection,
-    obj: { sql: string; bindings: any[]; response?: unknown }
+    pool: MapepirePool,
+    obj: { sql: string; bindings?: BindingValue[]; response?: any }
   ): Promise<void> {
-    const rows = await connection.query(obj.sql, obj.bindings || []);
-    obj.response = { rows: rows || [], rowCount: rows?.length ?? 0 };
+    const res: QueryResult<any> = await pool.execute(obj.sql, {
+      parameters: obj.bindings ?? [],
+      //isTerseResults: true,
+    });
+    const rows = res?.data ?? [];
+    obj.response = { rows, rowCount: rows.length };
   }
 
-  private async executeStatementQuery(connection: Connection, obj: any): Promise<void> {
+  private async executeStatementQuery(pool: MapepirePool, obj: any): Promise<void> {
     try {
       const method = String(obj.method || "").toLowerCase();
       const hasReturning = Array.isArray(obj.returning) && obj.returning.length > 0;
 
-      // INSERT ... RETURNING <id> (una sola columna)
-      if (method === "insert" && hasReturning && obj.returning.length === 1) {
-        const idCol = obj.returning[0];
-        const id = await connection.insertAndGetId(obj.sql, obj.bindings || []);
-        obj.response = { rows: [{ [idCol]: id }], rowCount: 1 };
-        return;
-      }
-
-      // RETURNING múltiple → FINAL TABLE
+      // INSERT/UPDATE/DELETE con RETURNING → FINAL TABLE
       if (hasReturning && (method === "insert" || method === "update" || method === "del" || method === "delete")) {
         const runSql = `SELECT * FROM FINAL TABLE (${obj.sql})`;
-        const rows = await connection.query(runSql, obj.bindings || []);
-        obj.response = { rows, rowCount: rows?.length ?? 0 };
+        const res: QueryResult<any> = await pool.execute(runSql, {
+          parameters: obj.bindings ?? [],
+          //isTerseResults: true,
+        });
+        const rows = res?.data ?? [];
+        obj.response = { rows, rowCount: rows.length };
         return;
       }
 
       // DML sin RETURNING
-      const count: number = await connection.update(obj.sql, obj.bindings || []);
-      obj.response = { rows: [], rowCount: count ?? 0 };
+      const res: QueryResult<any> = await pool.execute(obj.sql, {
+        parameters: obj.bindings ?? [],
+        //isTerseResults: true,
+      });
+      obj.response = { rows: [], rowCount: res?.update_count ?? 0 };
     } catch (err: any) {
       this.printError(typeof err === "string" ? err : JSON.stringify(err, null, 2));
       throw err;
@@ -180,33 +221,16 @@ class DB2Client extends knex.Client {
 
   // ===== Streaming =====
   async _stream(
-    connection: Connection,
-    obj: { sql: string; bindings: any[] },
-    stream: NodeJS.WritableStream,
-    _options: { fetchSize?: number }
+    _pool: MapepirePool,
+    obj: { sql: string; bindings?: BindingValue[] },
+    _stream: NodeJS.WritableStream
   ) {
-    if (!obj.sql) throw new Error("A query is required to stream results");
-
-    // node-jt400: createReadStream(sql, params)
-    return new Promise<void>((resolve, reject) => {
-      stream.once("error", reject);
-      stream.once("finish", resolve);
-
-      try {
-        const rs = connection.createReadStream(obj.sql, obj.bindings || []);
-        rs.once("error", (err) => {
-          stream.emit("error", err);
-          reject(err);
-        });
-        rs.pipe(stream);
-      } catch (e) {
-        reject(e);
-      }
-    });
+    // Mapepire no expone createReadStream; podríamos implementar paginado manual si lo necesitas.
+    throw new Error("Streaming no soportado actualmente con Mapepire. Usa paginación.");
   }
 
   transaction(container: any, config: any, outerTx: any): Knex.Transaction {
-    // Conserva tu Transaction; si luego quieres integrar pool.transaction(cb), lo vemos.
+    // Conservamos tu Transaction (si manejas autocommit con JDBCOptions "auto commit": false)
     return new Transaction(this, container, config, outerTx);
   }
 
@@ -280,25 +304,13 @@ interface DB2PoolConfig {
   acquireConnectionTimeout?: number;
 }
 
-// Parámetros JDBC/driver que quieras pasar tal cual a jt400
-interface DB2ConnectionParams {
-  [k: string]: any;
-}
-
-interface DB2ConnectionConfig {
-  host: string;
-  port?: number; // por defecto 50000
-  user: string;
-  password: string;
-  // 'driver' ya no aplica en jt400; lo dejamos opcional por compatibilidad
-  driver?: string;
-  connectionStringParams?: DB2ConnectionParams;
-}
-
+// Opcional: JDBCOptions a través de config
 export interface DB2Config extends Knex.Config {
   client: any;
-  connection: DB2ConnectionConfig;
+  connection: DaemonServer;
   pool?: DB2PoolConfig;
+  jdbcOptions?: JDBCOptions;            // <- si quieres pasar opciones JDBC
+  mapepire?: { maxSize?: number; startingSize?: number }; // <- tuning del Pool
 }
 
 export const DB2Dialect = DB2Client;
