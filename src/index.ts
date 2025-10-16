@@ -122,6 +122,7 @@ class DB2Client extends knex.Client {
 
     this._pool = new MapepirePool(opts);
     await this._pool.init(); // crea los SQLJob iniciales
+    (this as any).pool = makeFeathersPoolView(this._pool, this.config);
     return this._pool;
   }
 
@@ -139,6 +140,7 @@ class DB2Client extends knex.Client {
       pool?.end();
     } finally {
       this._pool = undefined;
+      (this as any).pool = undefined;
     }
   }
 
@@ -295,6 +297,44 @@ class DB2Client extends knex.Client {
     }
   }
 }
+
+// ⬇️ Añade esta función helper dentro del archivo
+function makeFeathersPoolView(mp: MapepirePool, cfg: any) {
+  const max = cfg?.mapepire?.maxSize ?? 10;
+  const min = cfg?.mapepire?.startingSize ?? 1;
+
+  const numUsed = () => {
+    // Toma “activos” como usados (busy+ready en tu pool)
+    return typeof (mp as any).getActiveJobCount === 'function'
+      ? mp.getActiveJobCount()
+      : 0;
+  };
+
+  const numFree = () => Math.max(0, max - numUsed());
+
+  // No tienes cola explícita en MapepirePool → 0 por defecto
+  const numPendingAcquires = () => 0;
+
+  // Si tu pool crea jobs on-demand puedes estimar “creates” cuando hay espacio y no hay ready,
+  // pero como no expones ready/waiting, lo dejamos en 0.
+  const numPendingCreates = () => 0;
+
+  return {
+    // API “generic-pool v2” que algunos handlers consultan:
+    getRunningCount: numUsed,
+    getWaitingCount: numPendingAcquires,
+    getIdleCount: numFree,
+    getMaxPoolSize: () => max,
+    getMinPoolSize: () => min,
+
+    // API “tarn” que otros consultan:
+    numUsed,
+    numFree,
+    numPendingAcquires,
+    numPendingCreates,
+  };
+}
+
 
 // ===== Tipos de configuración =====
 

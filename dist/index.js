@@ -387,6 +387,7 @@ var DB2Client = class extends import_knex.knex.Client {
     this.printDebug({ poolOptions: { ...opts, creds: { ...opts.creds, password: "***" } } });
     this._pool = new import_mapepire_js.Pool(opts);
     await this._pool.init();
+    this.pool = makeFeathersPoolView(this._pool, this.config);
     return this._pool;
   }
   async acquireRawConnection() {
@@ -401,6 +402,7 @@ var DB2Client = class extends import_knex.knex.Client {
       pool?.end();
     } finally {
       this._pool = void 0;
+      this.pool = void 0;
     }
   }
   // ===== Ejecución =====
@@ -519,6 +521,29 @@ var DB2Client = class extends import_knex.knex.Client {
     }
   }
 };
+function makeFeathersPoolView(mp, cfg) {
+  const max = cfg?.mapepire?.maxSize ?? 10;
+  const min = cfg?.mapepire?.startingSize ?? 1;
+  const numUsed = () => {
+    return typeof mp.getActiveJobCount === "function" ? mp.getActiveJobCount() : 0;
+  };
+  const numFree = () => Math.max(0, max - numUsed());
+  const numPendingAcquires = () => 0;
+  const numPendingCreates = () => 0;
+  return {
+    // API “generic-pool v2” que algunos handlers consultan:
+    getRunningCount: numUsed,
+    getWaitingCount: numPendingAcquires,
+    getIdleCount: numFree,
+    getMaxPoolSize: () => max,
+    getMinPoolSize: () => min,
+    // API “tarn” que otros consultan:
+    numUsed,
+    numFree,
+    numPendingAcquires,
+    numPendingCreates
+  };
+}
 var DB2Dialect = DB2Client;
 var index_default = DB2Client;
 // Annotate the CommonJS export names for ESM import in node:
