@@ -330,7 +330,10 @@ var DB2Client = class extends import_knex.knex.Client {
       );
     }
     const dbClient = this.config.client || this.dialect;
-    if (!dbClient) throw new Error(`knex: Required configuration option 'client' is missing.`);
+    if (!dbClient)
+      throw new Error(
+        `knex: Required configuration option 'client' is missing.`
+      );
     if (config.version) this.version = config.version;
     if (this.driverName && config.connection) {
       this.initializeDriver();
@@ -384,7 +387,9 @@ var DB2Client = class extends import_knex.knex.Client {
       maxSize: this.config.mapepire?.maxSize ?? 10,
       startingSize: this.config.mapepire?.startingSize ?? 1
     };
-    this.printDebug({ poolOptions: { ...opts, creds: { ...opts.creds, password: "***" } } });
+    this.printDebug({
+      poolOptions: { ...opts, creds: { ...opts.creds, password: "***" } }
+    });
     this._pool = new import_mapepire_js.Pool(opts);
     await this._pool.init();
     this.pool = makeFeathersPoolView(this._pool, this.config);
@@ -457,13 +462,17 @@ var DB2Client = class extends import_knex.knex.Client {
       });
       obj.response = { rows: [], rowCount: res?.update_count ?? 0 };
     } catch (err) {
-      this.printError(typeof err === "string" ? err : JSON.stringify(err, null, 2));
+      this.printError(
+        typeof err === "string" ? err : JSON.stringify(err, null, 2)
+      );
       throw err;
     }
   }
   // ===== Streaming =====
   async _stream(_pool, obj, _stream) {
-    throw new Error("Streaming no soportado actualmente con Mapepire. Usa paginaci\xF3n.");
+    throw new Error(
+      "Streaming no soportado actualmente con Mapepire. Usa paginaci\xF3n."
+    );
   }
   transaction(container, config, outerTx) {
     return new ibmi_transaction_default(this, container, config, outerTx);
@@ -524,24 +533,41 @@ var DB2Client = class extends import_knex.knex.Client {
 function makeFeathersPoolView(mp, cfg) {
   const max = cfg?.mapepire?.maxSize ?? 10;
   const min = cfg?.mapepire?.startingSize ?? 1;
-  const numUsed = () => {
-    return typeof mp.getActiveJobCount === "function" ? mp.getActiveJobCount() : 0;
-  };
+  const numUsed = () => typeof mp.getActiveJobCount === "function" ? mp.getActiveJobCount() : 0;
   const numFree = () => Math.max(0, max - numUsed());
   const numPendingAcquires = () => 0;
   const numPendingCreates = () => 0;
+  const createAcquireReturn = () => {
+    const promise = Promise.resolve(mp);
+    const thenable = {
+      promise,
+      then: promise.then.bind(promise),
+      catch: promise.catch.bind(promise),
+      finally: promise.finally?.bind(promise)
+    };
+    return thenable;
+  };
   return {
-    // API “generic-pool v2” que algunos handlers consultan:
+    // Lecturas de estado (compat gen-pool/tarn):
     getRunningCount: numUsed,
     getWaitingCount: numPendingAcquires,
     getIdleCount: numFree,
     getMaxPoolSize: () => max,
     getMinPoolSize: () => min,
-    // API “tarn” que otros consultan:
     numUsed,
     numFree,
     numPendingAcquires,
-    numPendingCreates
+    numPendingCreates,
+    // 🔑 Compat:
+    acquire() {
+      return createAcquireReturn();
+    },
+    release(_conn) {
+      return;
+    },
+    destroy(_conn) {
+      mp.end();
+    }
   };
 }
 var DB2Dialect = DB2Client;
